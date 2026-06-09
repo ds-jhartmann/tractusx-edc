@@ -1,9 +1,9 @@
 # Kafka Streaming Extension
 
-The Kafka streaming extension provides the `Kafka-PULL` transfer type, enabling real-time,
-event-driven data exchange between sovereign partners over Apache Kafka. It is implemented as a
-control-plane `DataFlowController` and ships in the standard `tractusx-connector` runtime (via
-`edc-controlplane-base`), so it does not require a separate deployment.
+The Kafka streaming extension provides the `KafkaBroker-PULL` transfer type, enabling real-time,
+event-driven data exchange between sovereign partners over Apache Kafka. It is implemented as an EDC
+data-plane extension and ships in the standard `tractusx-connector` runtime (via `edc-dataplane-base`),
+so it does not require a separate deployment.
 
 Unlike a proxied transfer, data flows **directly** from the provider's Kafka broker to the consumer.
 The EDC control plane stays in charge of access: the extension provisions short-lived OAuth2
@@ -59,10 +59,10 @@ Product Pass, and ESG monitoring.
 
 The extension consists of three modules under `edc-extensions/dataplane/kafka/`:
 
-1. **Kafka Broker Extension** (`kafka-broker-extension`): a control plane extension implementing the
-   `DataFlowController` interface for the `Kafka-PULL` transfer type. It provisions OAuth2 credentials
-   and optional Kafka ACLs, stores tokens in the EDC Vault, builds the EDR for the consumer, and
-   revokes credentials on suspend/terminate.
+1. **Kafka Broker Extension** (`kafka-broker-extension`): a data-plane extension that adds the
+   `KafkaBroker-PULL` transfer type. It provisions OAuth2 credentials and optional Kafka ACLs, stores
+   tokens in the EDC Vault, builds the EDR for the consumer, and revokes credentials on
+   suspend/terminate.
 2. **Data Address Kafka** (`data-address-kafka`): defines the `KafkaBroker` data address format
    (topic, bootstrap servers, security protocol, SASL mechanism, OAuth2 settings, consumer group).
 3. **Validator Data Address Kafka** (`validator-data-address-kafka`): validates that a Kafka data
@@ -279,12 +279,12 @@ The extension does not change anything related to IATP, DSP, or policy definitio
 conformity to [CX-0018 Dataspace Connectivity v.3.1.0](https://catenax-ev.github.io/docs/standards/CX-0018-DataspaceConnectivity)
 (chapters 2.1, 2.3, 2.4 and 2.5).
 
-Since the extension introduces the new transfer type `Kafka-PULL`, the standard should be extended by
-this type. An example of such an extension:
+Since the extension introduces the new transfer type `KafkaBroker-PULL`, the standard should be extended
+by this type. An example of such an extension:
 
-> 2.2.3 Kafka-PULL
+> 2.2.3 KafkaBroker-PULL
 >
-> A Consumer MUST send a `dspace:TransferRequestMessage` with `dct:format:dspace:Kafka-PULL`.
+> A Consumer MUST send a `dspace:TransferRequestMessage` with `dct:format:dspace:KafkaBroker-PULL`.
 >
 > A Provider MUST send a `dspace:TransferStartMessage` with sufficient information in the
 > `dspace:dataAddress` property so that a client connection to the `dspace:endpoint` may succeed when

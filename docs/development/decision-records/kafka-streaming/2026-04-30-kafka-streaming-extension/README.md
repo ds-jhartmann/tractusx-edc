@@ -47,8 +47,9 @@ the upstream convention used by `dataplane-proxy-http`. There is no separate
 
 ### Transfer type and DataAddress
 
-- Transfer type identifier: **`Kafka-PULL`** (matches the existing code constant).
-  PoC docs that read `KafkaBroker-PULL` are aligned to `Kafka-PULL` during migration.
+- Transfer type identifier: **`KafkaBroker-PULL`**. On EDC 0.16.0 the data plane derives the transfer
+  type as `<sourceType>-PULL`, so it follows the `KafkaBroker` DataAddress type (the PoC's `Kafka-PULL`
+  no longer applies).
 - DataAddress type: **`KafkaBroker`**.
 - The DataAddress carries the Kafka topic, bootstrap servers, security protocol,
   SASL mechanism, group prefix, poll duration, OAuth2 token URL, optional revocation
@@ -76,11 +77,14 @@ window independently of token expiry. The ACL admin client is configured via the
 
 ### Runtime wiring
 
-Both `kafka-broker-extension` and `validator-data-address-kafka` are added as
-`runtimeOnly` dependencies of `edc-controlplane-base`. The extension registers a
-`DataFlowController` for `Kafka-PULL` and is therefore a control-plane component;
-it is not wired into `edc-dataplane-base` (there is no proxied data plane — the
-consumer reads directly from the broker using the EDR).
+`kafka-broker-extension` is a data-plane extension and is added as a `runtimeOnly` dependency of
+`edc-dataplane-base`; `validator-data-address-kafka` stays on `edc-controlplane-base` (DataAddress
+validation at asset creation). On EDC 0.16.0 the extension registers a `ResourceDefinitionGenerator`
+plus a `Provisioner`/`Deprovisioner` (mint the OAuth token, create/revoke Kafka ACLs) and an
+`EndpointDataReferenceService` that returns the broker EDR. There is no proxied data plane — the
+consumer reads directly from the broker using the EDR. (The original control-plane `DataFlowController`
+approach was removed when EDC 0.16.0 dropped `DataFlowManager`; see the EDC *inline-data-flow-manager*
+decision record.)
 
 ### Testing
 
@@ -100,7 +104,6 @@ separate follow-ups:
    the PoC repo permanently. They are dev scaffolding, not production components.
 2. **`DataPlaneSelectorService` selector-strategy bug** — a known PoC issue where
    `selectorService.getAll().getContent().getFirst()` ignores the configured
-   `edc.dataplane.client.selector.strategy`. The migrated `kafka-broker-extension` does
-   not use `DataPlaneSelectorService` (its `DataFlowController` handles `Kafka-PULL`
-   directly), so this does not apply to the migrated code; tracked separately for the
-   originating component.
+   `edc.dataplane.client.selector.strategy`. The migrated extension no longer carries any
+   custom data-plane selection logic — on EDC 0.16.0 it plugs into the standard data-plane
+   framework — so this PoC bug does not apply to the migrated code.

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Kafka Broker Extension is a Control Plane extension that enables secure, dynamic
+The Kafka Broker Extension is a data-plane extension that enables secure, dynamic
 access to Kafka topics within the Tractus-X EDC. It allows data providers to share
 Kafka streams with consumers while maintaining full control over access permissions
 through per-transfer OAuth2 credentials.
@@ -18,8 +18,8 @@ This extension lives alongside two supporting modules under `edc-extensions/data
 
 ## Transfer type
 
-The extension registers a `DataFlowController` for the **`Kafka-PULL`** transfer
-type. The controller lifecycle:
+The extension adds the **`KafkaBroker-PULL`** transfer type to the EDC data plane
+via a provisioner and an EDR service. The provisioning lifecycle:
 
 1. **start** — provisions a fresh OAuth2 access token via the Client Credentials
    flow, stores it in the provider vault keyed by the transfer process id, and

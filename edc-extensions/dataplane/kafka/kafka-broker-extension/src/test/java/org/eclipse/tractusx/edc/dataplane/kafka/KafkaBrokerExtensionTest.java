@@ -19,36 +19,52 @@
 
 package org.eclipse.tractusx.edc.dataplane.kafka;
 
-import org.eclipse.edc.connector.controlplane.transfer.spi.flow.DataFlowManager;
+import org.eclipse.edc.connector.dataplane.spi.edr.EndpointDataReferenceServiceRegistry;
+import org.eclipse.edc.connector.dataplane.spi.provision.ProvisionerManager;
+import org.eclipse.edc.connector.dataplane.spi.provision.ResourceDefinitionGeneratorManager;
+import org.eclipse.edc.http.spi.EdcHttpClient;
 import org.eclipse.edc.junit.extensions.DependencyInjectionExtension;
 import org.eclipse.edc.spi.security.Vault;
 import org.eclipse.edc.spi.system.ServiceExtensionContext;
+import org.eclipse.tractusx.edc.dataplane.kafka.flow.KafkaEndpointDataReferenceService;
+import org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaDeprovisioner;
+import org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaProvisioner;
+import org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaResourceDefinitionGenerator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import static org.eclipse.tractusx.edc.dataplane.kafka.dataaddress.KafkaBrokerDataAddressSchema.KAFKA_TYPE;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(DependencyInjectionExtension.class)
 class KafkaBrokerExtensionTest {
 
-    private final DataFlowManager dataFlowManager = mock();
+    private final ResourceDefinitionGeneratorManager generatorManager = mock();
+    private final ProvisionerManager provisionerManager = mock();
+    private final EndpointDataReferenceServiceRegistry edrRegistry = mock();
     private final Vault vault = mock();
+    private final EdcHttpClient httpClient = mock();
 
     @BeforeEach
     void setUp(final ServiceExtensionContext context) {
-        context.registerService(DataFlowManager.class, dataFlowManager);
+        context.registerService(ResourceDefinitionGeneratorManager.class, generatorManager);
+        context.registerService(ProvisionerManager.class, provisionerManager);
+        context.registerService(EndpointDataReferenceServiceRegistry.class, edrRegistry);
         context.registerService(Vault.class, vault);
+        context.registerService(EdcHttpClient.class, httpClient);
     }
 
     @Test
-    void initialize_RegistersKafkaDataFlowController(final KafkaBrokerExtension extension, final ServiceExtensionContext context) {
+    void initialize_RegistersKafkaDataPlaneComponents(final KafkaBrokerExtension extension, final ServiceExtensionContext context) {
         extension.initialize(context);
 
-        verify(dataFlowManager, times(1)).register(anyInt(), any(KafkaBrokerDataFlowController.class));
+        verify(generatorManager).registerProviderGenerator(any(KafkaResourceDefinitionGenerator.class));
+        verify(provisionerManager).register(any(KafkaProvisioner.class));
+        verify(provisionerManager).register(any(KafkaDeprovisioner.class));
+        verify(edrRegistry).register(eq(KAFKA_TYPE), any(KafkaEndpointDataReferenceService.class));
     }
 }

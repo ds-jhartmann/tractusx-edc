@@ -59,7 +59,7 @@ import static org.eclipse.tractusx.edc.tests.participant.TractusxParticipantBase
 import static org.eclipse.tractusx.edc.tests.runtimes.Runtimes.pgRuntime;
 
 /**
- * End-to-end test for the Kafka-PULL transfer type. Runs a real Kafka broker via Testcontainers
+ * End-to-end test for the KafkaBroker-PULL transfer type. Runs a real Kafka broker via Testcontainers
  * and a WireMock-backed OAuth2 token endpoint.
  */
 @EndToEndTest
@@ -153,7 +153,7 @@ public class KafkaPullEndToEndTest {
 
         var transferProcessId = CONSUMER
                 .requestAssetFrom(assetId, PROVIDER)
-                .withTransferType("Kafka-PULL")
+                .withTransferType("KafkaBroker-PULL")
                 .withDestination(destination)
                 .execute();
 
@@ -203,7 +203,7 @@ public class KafkaPullEndToEndTest {
 
         var transferProcessId = CONSUMER
                 .requestAssetFrom(assetId, PROVIDER)
-                .withTransferType("Kafka-PULL")
+                .withTransferType("KafkaBroker-PULL")
                 .withDestination(destination)
                 .execute();
 

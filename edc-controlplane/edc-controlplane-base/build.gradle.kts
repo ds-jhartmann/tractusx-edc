@@ -67,7 +67,6 @@ dependencies {
     implementation(project(":edc-extensions:did-document:did-document-service-self-registration"))
     implementation(project(":edc-extensions:did-document:did-document-service-div"))
 
-    runtimeOnly(project(":edc-extensions:dataplane:kafka:kafka-broker-extension"))
     runtimeOnly(project(":edc-extensions:dataplane:kafka:validator-data-address-kafka"))
 
     runtimeOnly(libs.bundles.edc.monitoring)

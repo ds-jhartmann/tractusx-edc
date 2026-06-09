@@ -22,12 +22,12 @@ plugins {
 }
 
 dependencies {
-    implementation(libs.edc.spi.transfer)
+    implementation(libs.edc.spi.core)
+    implementation(libs.edc.spi.dataplane.dataplane)
     implementation(libs.edc.spi.http)
     implementation(libs.edc.lib.util)
     implementation(libs.kafka.clients)
     implementation(project(":edc-extensions:dataplane:kafka:data-address-kafka"))
-    implementation(project(":edc-extensions:dataplane:kafka:validator-data-address-kafka"))
 
     testImplementation(libs.edc.junit)
     testImplementation(libs.testcontainers.junit)

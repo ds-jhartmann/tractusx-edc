@@ -20,7 +20,9 @@
 package org.eclipse.tractusx.edc.dataplane.kafka;
 
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.eclipse.edc.connector.controlplane.transfer.spi.flow.DataFlowManager;
+import org.eclipse.edc.connector.dataplane.spi.edr.EndpointDataReferenceServiceRegistry;
+import org.eclipse.edc.connector.dataplane.spi.provision.ProvisionerManager;
+import org.eclipse.edc.connector.dataplane.spi.provision.ResourceDefinitionGeneratorManager;
 import org.eclipse.edc.http.spi.EdcHttpClient;
 import org.eclipse.edc.runtime.metamodel.annotation.Extension;
 import org.eclipse.edc.runtime.metamodel.annotation.Inject;
@@ -31,17 +33,26 @@ import org.eclipse.edc.spi.system.ServiceExtensionContext;
 import org.eclipse.edc.spi.types.TypeManager;
 import org.eclipse.tractusx.edc.dataplane.kafka.acl.KafkaAclService;
 import org.eclipse.tractusx.edc.dataplane.kafka.acl.KafkaAclServiceImpl;
+import org.eclipse.tractusx.edc.dataplane.kafka.auth.KafkaOauthService;
 import org.eclipse.tractusx.edc.dataplane.kafka.auth.KafkaOauthServiceImpl;
+import org.eclipse.tractusx.edc.dataplane.kafka.flow.KafkaEndpointDataReferenceService;
+import org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaDeprovisioner;
+import org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaProvisioner;
+import org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaResourceDefinitionGenerator;
 
 import java.util.Properties;
 
+import static org.eclipse.tractusx.edc.dataplane.kafka.dataaddress.KafkaBrokerDataAddressSchema.KAFKA_TYPE;
+
 /**
- * Kafka Broker flow extension.
+ * Kafka streaming data-plane extension.
  * <p>
- * Set {@code edc.dataplane.kafka.acl.enabled=true} to activate Kafka ACL management.
- * When enabled, topic-scoped ACLs are created on transfer start and revoked immediately
- * on suspend/terminate, preventing consumers from reading past the contract's end
- * regardless of OAuth token expiry.
+ * Adds the {@code KafkaBroker-PULL} transfer type to the EDC data plane: on transfer start a fresh OAuth2
+ * token is minted and (optionally) broker ACLs are created, and the consumer is handed an EDR pointing
+ * directly at the Kafka broker. On suspend/terminate the ACLs and token are revoked.
+ * <p>
+ * Set {@code edc.dataplane.kafka.acl.enabled=true} to activate Kafka ACL management for immediate
+ * broker-level revocation independent of token expiry.
  */
 @Extension(value = KafkaBrokerExtension.NAME)
 public class KafkaBrokerExtension implements ServiceExtension {
@@ -64,9 +75,6 @@ public class KafkaBrokerExtension implements ServiceExtension {
     static final String ACL_SASL_JAAS_CONFIG = "edc.dataplane.kafka.acl.sasl.jaas.config";
 
     @Inject
-    private DataFlowManager dataFlowManager;
-
-    @Inject
     private Vault vault;
 
     @Inject
@@ -75,11 +83,30 @@ public class KafkaBrokerExtension implements ServiceExtension {
     @Inject
     private EdcHttpClient httpClient;
 
+    @Inject
+    private ResourceDefinitionGeneratorManager resourceDefinitionGeneratorManager;
+
+    @Inject
+    private ProvisionerManager provisionerManager;
+
+    @Inject
+    private EndpointDataReferenceServiceRegistry endpointDataReferenceServiceRegistry;
+
+    @Override
+    public String name() {
+        return NAME;
+    }
+
     @Override
     public void initialize(final ServiceExtensionContext context) {
-        var kafkaOauthService = new KafkaOauthServiceImpl(httpClient, typeManager.getMapper());
+        var monitor = context.getMonitor();
+        KafkaOauthService oauthService = new KafkaOauthServiceImpl(httpClient, typeManager.getMapper());
         KafkaAclService aclService = buildAclService(context);
-        dataFlowManager.register(1, new KafkaBrokerDataFlowController(vault, kafkaOauthService, aclService, typeManager.getMapper()));
+
+        resourceDefinitionGeneratorManager.registerProviderGenerator(new KafkaResourceDefinitionGenerator());
+        provisionerManager.register(new KafkaProvisioner(vault, oauthService, aclService, monitor, typeManager.getMapper()));
+        provisionerManager.register(new KafkaDeprovisioner(vault, oauthService, aclService, monitor));
+        endpointDataReferenceServiceRegistry.register(KAFKA_TYPE, new KafkaEndpointDataReferenceService());
     }
 
     private KafkaAclService buildAclService(ServiceExtensionContext context) {

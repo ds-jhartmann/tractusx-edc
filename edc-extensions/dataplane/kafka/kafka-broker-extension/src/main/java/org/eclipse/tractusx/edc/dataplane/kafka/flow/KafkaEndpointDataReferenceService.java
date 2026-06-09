@@ -21,17 +21,33 @@ package org.eclipse.tractusx.edc.dataplane.kafka.flow;
 
 import org.eclipse.edc.connector.dataplane.spi.DataFlow;
 import org.eclipse.edc.connector.dataplane.spi.edr.EndpointDataReferenceService;
+import org.eclipse.edc.spi.monitor.Monitor;
 import org.eclipse.edc.spi.result.Result;
 import org.eclipse.edc.spi.result.ServiceResult;
 import org.eclipse.edc.spi.types.domain.DataAddress;
+import org.eclipse.tractusx.edc.dataplane.kafka.acl.KafkaAclService;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * Produces the consumer-facing EDR for a {@code KafkaBroker} PULL flow. The EDR is the {@link DataAddress}
  * built by {@link org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaProvisioner} (broker coordinates,
  * topic, security settings and the minted token) and surfaced on the data flow as its provisioned address.
- * Revocation of the broker ACLs and token is handled by the deprovisioner, so revoke here is a no-op.
+ * <p>
+ * Revocation is split deliberately: the data plane invokes {@link #revokeEndpointDataReference} on
+ * <em>both</em> suspend and terminate, but only deprovisions (via the deprovisioner) on terminate. The
+ * broker ACLs are therefore revoked here so that <em>suspend</em> also cuts access immediately; the OAuth
+ * token is revoked by the deprovisioner on terminate, where the client credentials are available.
  */
 public class KafkaEndpointDataReferenceService implements EndpointDataReferenceService {
+
+    @Nullable
+    private final KafkaAclService aclService;
+    private final Monitor monitor;
+
+    public KafkaEndpointDataReferenceService(@Nullable KafkaAclService aclService, Monitor monitor) {
+        this.aclService = aclService;
+        this.monitor = monitor;
+    }
 
     @Override
     public Result<DataAddress> createEndpointDataReference(DataFlow dataFlow) {
@@ -44,6 +60,13 @@ public class KafkaEndpointDataReferenceService implements EndpointDataReferenceS
 
     @Override
     public ServiceResult<Void> revokeEndpointDataReference(String transferProcessId, String reason) {
-        return ServiceResult.success();
+        // Called on both suspend and terminate. Revoke the broker ACLs here so suspend cuts access
+        // immediately; when ACL management is disabled there is nothing to revoke and access ends at
+        // the token's TTL. The OAuth token is revoked by the deprovisioner on terminate.
+        if (aclService == null) {
+            return ServiceResult.success();
+        }
+        monitor.debug("Revoking Kafka ACLs for data flow %s".formatted(transferProcessId));
+        return ServiceResult.from(aclService.revokeAclsForTransferProcess(transferProcessId));
     }
 }

@@ -104,9 +104,9 @@ public class KafkaBrokerExtension implements ServiceExtension {
         KafkaAclService aclService = buildAclService(context);
 
         resourceDefinitionGeneratorManager.registerProviderGenerator(new KafkaResourceDefinitionGenerator());
-        provisionerManager.register(new KafkaProvisioner(vault, oauthService, aclService, monitor, typeManager.getMapper()));
+        provisionerManager.register(new KafkaProvisioner(vault, oauthService, monitor));
         provisionerManager.register(new KafkaDeprovisioner(vault, oauthService, aclService, monitor));
-        endpointDataReferenceServiceRegistry.register(KAFKA_TYPE, new KafkaEndpointDataReferenceService(aclService, monitor));
+        endpointDataReferenceServiceRegistry.register(KAFKA_TYPE, new KafkaEndpointDataReferenceService(aclService, monitor, typeManager.getMapper()));
     }
 
     private KafkaAclService buildAclService(ServiceExtensionContext context) {

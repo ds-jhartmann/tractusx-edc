@@ -23,15 +23,11 @@ import org.eclipse.edc.connector.dataplane.spi.provision.ProvisionResource;
 import org.eclipse.edc.connector.dataplane.spi.provision.ProvisionedResource;
 import org.eclipse.edc.spi.monitor.Monitor;
 import org.eclipse.edc.spi.response.StatusResult;
-import org.eclipse.edc.spi.result.Result;
 import org.eclipse.edc.spi.security.Vault;
 import org.eclipse.edc.spi.types.domain.DataAddress;
-import org.eclipse.tractusx.edc.dataplane.kafka.acl.KafkaAclService;
 import org.eclipse.tractusx.edc.dataplane.kafka.auth.KafkaOauthService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.eclipse.tractusx.edc.dataplane.kafka.dataaddress.KafkaBrokerDataAddressSchema.BOOTSTRAP_SERVERS;
@@ -56,48 +52,53 @@ class KafkaProvisionerTest {
 
     private static final String FLOW_ID = "flow-1";
     private static final String SECRET_KEY = "client-secret-key";
+    private static final String TOKEN_VALUE = "access-token";
     private static final String DATA_ADDRESS_GROUP_PREFIX = "provider-group-prefix";
     private static final String CONSUMER_BPN = "consumer-bpn";
 
     private final Vault vault = mock();
     private final KafkaOauthService oauthService = mock();
-    private final KafkaAclService aclService = mock();
     private KafkaProvisioner provisioner;
 
     @BeforeEach
     void setUp() {
-        provisioner = new KafkaProvisioner(vault, oauthService, aclService, mock(Monitor.class));
+        provisioner = new KafkaProvisioner(vault, oauthService, mock(Monitor.class));
         when(vault.resolveSecret(SECRET_KEY)).thenReturn("secret-value");
-        when(oauthService.getAccessToken(any())).thenReturn(jwtWithSub("kafka-subject"));
-        when(aclService.createAclsForSubject(any(), any(), any(), any())).thenReturn(Result.success());
+        when(oauthService.getAccessToken(any())).thenReturn(TOKEN_VALUE);
     }
 
     @Test
-    void provision_mintsToken_createsAcls_andBuildsEdr() throws Exception {
-        StatusResult<ProvisionedResource> result = provisioner.provision(resource(DATA_ADDRESS_GROUP_PREFIX)).get();
+    void provision_mintsToken_andBuildsEdr() throws Exception {
+        StatusResult<ProvisionedResource> result = provisioner.provision(resource(DATA_ADDRESS_GROUP_PREFIX, CONSUMER_BPN)).get();
 
         assertThat(result.succeeded()).isTrue();
         DataAddress edr = result.getContent().getDataAddress();
         assertThat(edr.getType()).isEqualTo(KAFKA_TYPE);
         assertThat(edr.getStringProperty(TOPIC)).isEqualTo("test-topic");
-        assertThat(edr.getStringProperty(TOKEN)).isEqualTo(jwtWithSub("kafka-subject"));
-        // group prefix property is honored over the consumer BPN fallback
+        assertThat(edr.getStringProperty(TOKEN)).isEqualTo(TOKEN_VALUE);
+        // the kafka.group.prefix property is honored over the consumer BPN fallback
         assertThat(edr.getStringProperty(GROUP_PREFIX)).isEqualTo(DATA_ADDRESS_GROUP_PREFIX);
 
-        verify(vault).storeSecret(eq(FLOW_ID), any());
-        verify(aclService).createAclsForSubject("kafka-subject", "test-topic", DATA_ADDRESS_GROUP_PREFIX, FLOW_ID);
+        verify(vault).storeSecret(eq(FLOW_ID), eq(TOKEN_VALUE));
     }
 
     @Test
     void provision_fallsBackToConsumerBpn_whenGroupPrefixAbsent() throws Exception {
-        StatusResult<ProvisionedResource> result = provisioner.provision(resource(null)).get();
+        StatusResult<ProvisionedResource> result = provisioner.provision(resource(null, CONSUMER_BPN)).get();
 
         assertThat(result.succeeded()).isTrue();
         assertThat(result.getContent().getDataAddress().getStringProperty(GROUP_PREFIX)).isEqualTo(CONSUMER_BPN);
-        verify(aclService).createAclsForSubject("kafka-subject", "test-topic", CONSUMER_BPN, FLOW_ID);
     }
 
-    private ProvisionResource resource(String groupPrefix) {
+    @Test
+    void provision_fails_whenGroupPrefixUnresolvable() throws Exception {
+        StatusResult<ProvisionedResource> result = provisioner.provision(resource(null, null)).get();
+
+        assertThat(result.failed()).isTrue();
+        assertThat(result.getFailureDetail()).contains("consumer-group prefix");
+    }
+
+    private ProvisionResource resource(String groupPrefix, String consumerBpn) {
         var builder = DataAddress.Builder.newInstance()
                 .type(KAFKA_TYPE)
                 .property(TOPIC, "test-topic")
@@ -110,20 +111,14 @@ class KafkaProvisionerTest {
         if (groupPrefix != null) {
             builder.property(GROUP_PREFIX, groupPrefix);
         }
-        return ProvisionResource.Builder.newInstance()
+        var resourceBuilder = ProvisionResource.Builder.newInstance()
                 .id("resource-1")
                 .flowId(FLOW_ID)
                 .type(KAFKA_RESOURCE_TYPE)
-                .dataAddress(builder.build())
-                .property(CONSUMER_GROUP_PREFIX_PROPERTY, CONSUMER_BPN)
-                .build();
-    }
-
-    private static String jwtWithSub(String sub) {
-        var enc = Base64.getUrlEncoder().withoutPadding();
-        var header = enc.encodeToString("{\"alg\":\"none\"}".getBytes());
-        var payload = enc.encodeToString(("{\"sub\":\"" + sub + "\"}").getBytes());
-        var sig = enc.encodeToString("sig".getBytes());
-        return header + "." + payload + "." + sig;
+                .dataAddress(builder.build());
+        if (consumerBpn != null) {
+            resourceBuilder.property(CONSUMER_GROUP_PREFIX_PROPERTY, consumerBpn);
+        }
+        return resourceBuilder.build();
     }
 }

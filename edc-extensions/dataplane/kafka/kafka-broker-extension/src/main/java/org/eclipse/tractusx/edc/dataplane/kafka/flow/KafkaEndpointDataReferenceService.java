@@ -19,8 +19,10 @@
 
 package org.eclipse.tractusx.edc.dataplane.kafka.flow;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.eclipse.edc.connector.dataplane.spi.DataFlow;
 import org.eclipse.edc.connector.dataplane.spi.edr.EndpointDataReferenceService;
+import org.eclipse.edc.spi.EdcException;
 import org.eclipse.edc.spi.monitor.Monitor;
 import org.eclipse.edc.spi.result.Result;
 import org.eclipse.edc.spi.result.ServiceResult;
@@ -28,45 +30,88 @@ import org.eclipse.edc.spi.types.domain.DataAddress;
 import org.eclipse.tractusx.edc.dataplane.kafka.acl.KafkaAclService;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.Base64;
+
+import static org.eclipse.tractusx.edc.dataplane.kafka.dataaddress.KafkaBrokerDataAddressSchema.GROUP_PREFIX;
+import static org.eclipse.tractusx.edc.dataplane.kafka.dataaddress.KafkaBrokerDataAddressSchema.TOKEN;
+import static org.eclipse.tractusx.edc.dataplane.kafka.dataaddress.KafkaBrokerDataAddressSchema.TOPIC;
+
 /**
- * Produces the consumer-facing EDR for a {@code KafkaBroker} PULL flow. The EDR is the {@link DataAddress}
- * built by {@link org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaProvisioner} (broker coordinates,
- * topic, security settings and the minted token) and surfaced on the data flow as its provisioned address.
+ * Produces the consumer-facing EDR for a {@code KafkaBroker} PULL flow, and owns the per-activation broker
+ * ACL lifecycle.
  * <p>
- * Revocation is split deliberately: the data plane invokes {@link #revokeEndpointDataReference} on
- * <em>both</em> suspend and terminate, but only deprovisions (via the deprovisioner) on terminate. The
- * broker ACLs are therefore revoked here so that <em>suspend</em> also cuts access immediately; the OAuth
- * token is revoked by the deprovisioner on terminate, where the client credentials are available.
+ * {@link #createEndpointDataReference} runs on transfer start <em>and</em> resume, so it (re)creates the
+ * broker ACLs each time — restoring access on resume after a suspend revoked them. The EDR itself is the
+ * provisioned {@link DataAddress} ({@link DataFlow#getActualSource()}: broker coordinates, topic, security
+ * settings, consumer-group prefix and the minted token) built by
+ * {@link org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaProvisioner}.
+ * <p>
+ * {@link #revokeEndpointDataReference} runs on suspend <em>and</em> terminate, revoking the ACLs so suspend
+ * cuts access immediately; the OAuth token is revoked by the deprovisioner on terminate (where the client
+ * credentials are available). When ACL management is disabled both are no-ops and access ends at the
+ * token's TTL.
  */
 public class KafkaEndpointDataReferenceService implements EndpointDataReferenceService {
 
     @Nullable
     private final KafkaAclService aclService;
     private final Monitor monitor;
+    private final ObjectMapper objectMapper;
 
-    public KafkaEndpointDataReferenceService(@Nullable KafkaAclService aclService, Monitor monitor) {
+    public KafkaEndpointDataReferenceService(@Nullable KafkaAclService aclService, Monitor monitor, ObjectMapper objectMapper) {
         this.aclService = aclService;
         this.monitor = monitor;
+        this.objectMapper = objectMapper;
     }
 
     @Override
     public Result<DataAddress> createEndpointDataReference(DataFlow dataFlow) {
-        var edr = dataFlow.provisionedDataAddress();
+        var edr = dataFlow.getActualSource();
         if (edr == null) {
             return Result.failure("No provisioned Kafka EDR available for data flow " + dataFlow.getId());
         }
+
+        if (aclService != null) {
+            try {
+                var subject = extractOauthSubject(edr.getStringProperty(TOKEN));
+                var aclResult = aclService.createAclsForSubject(subject, edr.getStringProperty(TOPIC),
+                        edr.getStringProperty(GROUP_PREFIX), dataFlow.getId());
+                if (aclResult.failed()) {
+                    return Result.failure("Failed to create Kafka ACLs: " + aclResult.getFailureDetail());
+                }
+            } catch (EdcException e) {
+                return Result.failure(e.getMessage());
+            }
+        }
+
         return Result.success(edr);
     }
 
     @Override
     public ServiceResult<Void> revokeEndpointDataReference(String transferProcessId, String reason) {
-        // Called on both suspend and terminate. Revoke the broker ACLs here so suspend cuts access
-        // immediately; when ACL management is disabled there is nothing to revoke and access ends at
-        // the token's TTL. The OAuth token is revoked by the deprovisioner on terminate.
         if (aclService == null) {
             return ServiceResult.success();
         }
         monitor.debug("Revoking Kafka ACLs for data flow %s".formatted(transferProcessId));
         return ServiceResult.from(aclService.revokeAclsForTransferProcess(transferProcessId));
+    }
+
+    private String extractOauthSubject(String token) {
+        try {
+            var parts = token.split("\\.");
+            if (parts.length != 3) {
+                throw new EdcException("Invalid JWT token format");
+            }
+            var payload = new String(Base64.getUrlDecoder().decode(parts[1]));
+            var subNode = objectMapper.readTree(payload).get("sub");
+            if (subNode == null || subNode.isNull()) {
+                throw new EdcException("No 'sub' claim found in JWT token");
+            }
+            return subNode.asText();
+        } catch (EdcException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new EdcException("Failed to extract OAuth subject from token: " + e.getMessage(), e);
+        }
     }
 }

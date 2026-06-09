@@ -19,7 +19,6 @@
 
 package org.eclipse.tractusx.edc.dataplane.kafka.provision;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.eclipse.edc.connector.dataplane.spi.provision.ProvisionResource;
 import org.eclipse.edc.connector.dataplane.spi.provision.ProvisionedResource;
 import org.eclipse.edc.connector.dataplane.spi.provision.Provisioner;
@@ -29,12 +28,9 @@ import org.eclipse.edc.spi.response.ResponseStatus;
 import org.eclipse.edc.spi.response.StatusResult;
 import org.eclipse.edc.spi.security.Vault;
 import org.eclipse.edc.spi.types.domain.DataAddress;
-import org.eclipse.tractusx.edc.dataplane.kafka.acl.KafkaAclService;
 import org.eclipse.tractusx.edc.dataplane.kafka.auth.KafkaOauthService;
 import org.eclipse.tractusx.edc.dataplane.kafka.auth.OauthCredentials;
-import org.jetbrains.annotations.Nullable;
 
-import java.util.Base64;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
@@ -56,30 +52,22 @@ import static org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaProvisionC
 
 /**
  * Data-plane {@link Provisioner} for the {@code KafkaBroker} source type. On provision it mints a fresh
- * OAuth2 access token (Client Credentials flow) and, when ACL management is enabled, creates the broker
- * ACLs for the token subject. The provisioned {@link DataAddress} is the EDR handed to the consumer:
- * the broker coordinates, topic, security settings and the minted token. The token is also stored in the
- * vault keyed by the data-flow id so {@link KafkaDeprovisioner} can revoke it.
+ * OAuth2 access token (Client Credentials flow) and builds the provisioned {@link DataAddress} — the EDR
+ * handed to the consumer: the broker coordinates, topic, security settings, consumer-group prefix and the
+ * minted token. The token is also stored in the vault keyed by the data-flow id so
+ * {@link KafkaDeprovisioner} can revoke it on terminate. Broker ACLs are managed per activation by
+ * {@code KafkaEndpointDataReferenceService} (so suspend/resume toggle access), not here.
  */
 public class KafkaProvisioner implements Provisioner {
 
     private final Vault vault;
     private final KafkaOauthService oauthService;
-    @Nullable
-    private final KafkaAclService aclService;
     private final Monitor monitor;
-    private final ObjectMapper objectMapper;
 
-    public KafkaProvisioner(Vault vault, KafkaOauthService oauthService, @Nullable KafkaAclService aclService, Monitor monitor) {
-        this(vault, oauthService, aclService, monitor, new ObjectMapper());
-    }
-
-    public KafkaProvisioner(Vault vault, KafkaOauthService oauthService, @Nullable KafkaAclService aclService, Monitor monitor, ObjectMapper objectMapper) {
+    public KafkaProvisioner(Vault vault, KafkaOauthService oauthService, Monitor monitor) {
         this.vault = vault;
         this.oauthService = oauthService;
-        this.aclService = aclService;
         this.monitor = monitor;
-        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -93,21 +81,16 @@ public class KafkaProvisioner implements Provisioner {
             var flowId = resource.getFlowId();
             var source = resource.getDataAddress();
 
-            var token = oauthService.getAccessToken(extractOauthCredentials(source));
-            vault.storeSecret(flowId, token);
-
             var groupPrefix = Optional.ofNullable(source.getStringProperty(GROUP_PREFIX))
                     .orElse((String) resource.getProperty(CONSUMER_GROUP_PREFIX_PROPERTY));
-
-            if (aclService != null) {
-                var subject = extractOauthSubject(token);
-                var topic = source.getStringProperty(TOPIC);
-                var aclResult = aclService.createAclsForSubject(subject, topic, groupPrefix, flowId);
-                if (aclResult.failed()) {
-                    vault.deleteSecret(flowId);
-                    return completed(StatusResult.failure(ResponseStatus.FATAL_ERROR, "Failed to create Kafka ACLs: " + aclResult.getFailureDetail()));
-                }
+            if (groupPrefix == null || groupPrefix.isBlank()) {
+                return completed(StatusResult.failure(ResponseStatus.FATAL_ERROR,
+                        "Cannot determine Kafka consumer-group prefix: neither the '%s' property nor a consumer participant id is present"
+                                .formatted(GROUP_PREFIX)));
             }
+
+            var token = oauthService.getAccessToken(extractOauthCredentials(source));
+            vault.storeSecret(flowId, token);
 
             var pollDuration = Optional.ofNullable(source.getStringProperty(POLL_DURATION)).orElse(DEFAULT_POLL_DURATION);
 
@@ -143,25 +126,6 @@ public class KafkaProvisioner implements Provisioner {
                 Optional.ofNullable(source.getStringProperty(OAUTH_REVOKE_URL)),
                 source.getStringProperty(OAUTH_CLIENT_ID),
                 clientSecret);
-    }
-
-    private String extractOauthSubject(String token) {
-        try {
-            var parts = token.split("\\.");
-            if (parts.length != 3) {
-                throw new EdcException("Invalid JWT token format");
-            }
-            var payload = new String(Base64.getUrlDecoder().decode(parts[1]));
-            var subNode = objectMapper.readTree(payload).get("sub");
-            if (subNode == null || subNode.isNull()) {
-                throw new EdcException("No 'sub' claim found in JWT token");
-            }
-            return subNode.asText();
-        } catch (EdcException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new EdcException("Failed to extract OAuth subject from token: " + e.getMessage(), e);
-        }
     }
 
     private static CompletableFuture<StatusResult<ProvisionedResource>> completed(StatusResult<ProvisionedResource> result) {

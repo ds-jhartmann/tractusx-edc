@@ -41,6 +41,7 @@ public class KafkaBrokerDataAddressValidator implements Validator<DataAddress> {
     public KafkaBrokerDataAddressValidator() {
     }
 
+    @Override
     public ValidationResult validate(final DataAddress input) {
         List<Violation> violations = Stream.of(
                 TOPIC,

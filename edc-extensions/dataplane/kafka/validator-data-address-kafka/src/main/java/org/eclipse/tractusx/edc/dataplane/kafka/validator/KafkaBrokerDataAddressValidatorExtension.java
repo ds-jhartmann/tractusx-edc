@@ -37,6 +37,7 @@ public class KafkaBrokerDataAddressValidatorExtension implements ServiceExtensio
     public KafkaBrokerDataAddressValidatorExtension() {
     }
 
+    @Override
     public void initialize(final ServiceExtensionContext context) {
         var validator = new KafkaBrokerDataAddressValidator();
         this.dataAddressValidatorRegistry.registerSourceValidator(KAFKA_TYPE, validator);

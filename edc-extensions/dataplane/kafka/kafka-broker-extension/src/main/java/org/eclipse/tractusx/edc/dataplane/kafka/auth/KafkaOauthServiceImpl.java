@@ -53,6 +53,7 @@ public class KafkaOauthServiceImpl implements KafkaOauthService {
     /**
      * Always performs a client_credentials flow and returns a fresh token.
      */
+    @Override
     public String getAccessToken(final OauthCredentials creds) {
         return fetchNewToken(creds);
     }
@@ -92,6 +93,7 @@ public class KafkaOauthServiceImpl implements KafkaOauthService {
     /**
      * Revokes the given token.
      */
+    @Override
     public void revokeToken(final OauthCredentials creds, final String token) {
         if (creds.revocationUrl().isEmpty()) {
             return;

@@ -22,6 +22,7 @@ package org.eclipse.tractusx.edc.dataplane.kafka.provision;
 import org.eclipse.edc.connector.dataplane.spi.provision.DeprovisionedResource;
 import org.eclipse.edc.connector.dataplane.spi.provision.Deprovisioner;
 import org.eclipse.edc.connector.dataplane.spi.provision.ProvisionResource;
+import org.eclipse.edc.spi.EdcException;
 import org.eclipse.edc.spi.monitor.Monitor;
 import org.eclipse.edc.spi.response.ResponseStatus;
 import org.eclipse.edc.spi.response.StatusResult;
@@ -95,7 +96,8 @@ public class KafkaDeprovisioner implements Deprovisioner {
     }
 
     private OauthCredentials extractOauthCredentials(DataAddress source) {
-        var clientSecret = vault.resolveSecret(source.getStringProperty(OAUTH_CLIENT_SECRET_KEY));
+        var clientSecret = Optional.ofNullable(vault.resolveSecret(source.getStringProperty(OAUTH_CLIENT_SECRET_KEY)))
+                .orElseThrow(() -> new EdcException("Kafka client secret was not found in the vault"));
         return new OauthCredentials(
                 source.getStringProperty(OAUTH_TOKEN_URL),
                 Optional.ofNullable(source.getStringProperty(OAUTH_REVOKE_URL)),

@@ -49,7 +49,10 @@ public class KafkaExtension implements BeforeAllCallback, AfterAllCallback {
 
     private static final String IMAGE = "apache/kafka-native:4.0.0";
 
-    private final KafkaContainer kafkaContainer = new KafkaContainer(IMAGE);
+    // apache/kafka-native occasionally exits during boot under CI resource pressure; retry the
+    // container start a few times instead of failing the whole test class in @BeforeAll.
+    private final KafkaContainer kafkaContainer = new KafkaContainer(IMAGE)
+            .withStartupAttempts(3);
 
     @Override
     public void beforeAll(ExtensionContext context) {

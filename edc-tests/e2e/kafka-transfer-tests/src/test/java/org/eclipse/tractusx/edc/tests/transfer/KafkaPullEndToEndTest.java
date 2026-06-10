@@ -47,6 +47,7 @@ import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMoc
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.eclipse.edc.connector.controlplane.transfer.spi.types.TransferProcessStates.STARTED;
+import static org.eclipse.edc.connector.controlplane.transfer.spi.types.TransferProcessStates.TERMINATED;
 import static org.eclipse.edc.jsonld.spi.JsonLdKeywords.TYPE;
 import static org.eclipse.edc.spi.constants.CoreConstants.EDC_NAMESPACE;
 import static org.eclipse.tractusx.edc.tests.TestRuntimeConfiguration.CONSUMER_BPN;
@@ -72,6 +73,7 @@ public class KafkaPullEndToEndTest {
     private static final String CLIENT_ID = "kafka-client-id";
     private static final String CLIENT_SECRET_KEY = "kafka-client-secret";
     private static final String CLIENT_SECRET_VALUE = "kafka-client-secret-value";
+    private static final String ACCESS_TOKEN = "test-access-token";
 
     private static final TransferParticipant CONSUMER = TransferParticipant.Builder.newInstance()
             .name(CONSUMER_NAME)
@@ -117,7 +119,7 @@ public class KafkaPullEndToEndTest {
                 .willReturn(aResponse()
                         .withStatus(200)
                         .withHeader("Content-Type", "application/json")
-                        .withBody("{\"access_token\":\"test-access-token\",\"expires_in\":3600}")));
+                        .withBody("{\"access_token\":\"" + ACCESS_TOKEN + "\",\"expires_in\":3600}")));
         OAUTH.stubFor(post(urlEqualTo("/revoke"))
                 .willReturn(aResponse().withStatus(200)));
         PROVIDER_RUNTIME.getService(Vault.class).storeSecret(CLIENT_SECRET_KEY, CLIENT_SECRET_VALUE);
@@ -132,11 +134,20 @@ public class KafkaPullEndToEndTest {
         var transferProcessId = startKafkaPullTransfer("kafka-test-asset", "def-1", kafkaSourceAddress("kafka-transfer-test", true));
         CONSUMER.waitForTransferProcess(transferProcessId, STARTED);
 
-        // the consumer can read the messages published to the brokered topic
-        var consumed = KAFKA.consume(TOPIC, Duration.ofSeconds(10));
+        // the consumer receives an EDR carrying the broker connection details and the minted token
+        var edr = CONSUMER.edrs().waitForEdr(transferProcessId);
+        assertThat(edr.getString("kafka.bootstrap.servers")).isEqualTo(KAFKA.getBootstrapServers());
+        assertThat(edr.getString("topic")).isEqualTo(TOPIC);
+        assertThat(edr.getString("kafka.security.protocol")).isEqualTo("SASL_PLAINTEXT");
+        assertThat(edr.getString("kafka.sasl.mechanism")).isEqualTo("OAUTHBEARER");
+        assertThat(edr.getString("kafka.group.prefix")).isEqualTo(CONSUMER.getBpn());
+        assertThat(edr.getString("token")).isEqualTo(ACCESS_TOKEN);
+
+        // consuming via the broker coordinates and topic taken from the EDR returns the published messages
+        var consumed = KAFKA.consume(edr.getString("kafka.bootstrap.servers"), edr.getString("topic"), Duration.ofSeconds(10));
         assertThat(consumed).isNotEmpty();
 
-        // the data plane minted an access token via the OAuth2 client-credentials flow
+        // the data plane minted the access token via the OAuth2 client-credentials flow
         OAUTH.verify(postRequestedFor(urlEqualTo("/token")));
     }
 
@@ -146,9 +157,26 @@ public class KafkaPullEndToEndTest {
         var transferProcessId = startKafkaPullTransfer("kafka-fallback-asset", "def-2", kafkaSourceAddress("kafka-fallback-test", false));
         CONSUMER.waitForTransferProcess(transferProcessId, STARTED);
 
-        // provisioning still succeeds: an access token is minted despite the missing group prefix
+        // provisioning still succeeds and the EDR carries a (non-blank) group prefix from the participant-id fallback
+        var edr = CONSUMER.edrs().waitForEdr(transferProcessId);
+        assertThat(edr.getString("kafka.group.prefix")).isNotBlank();
+        OAUTH.verify(postRequestedFor(urlEqualTo("/token")));
+    }
+
+    @Test
+    void kafkaPullTransfer_terminationRevokesToken() {
+        var transferProcessId = startKafkaPullTransfer("kafka-terminate-asset", "def-3", kafkaSourceAddress("kafka-terminate-test", true));
+        CONSUMER.waitForTransferProcess(transferProcessId, STARTED);
+
+        // a token was minted (and stored under the flow id) while the transfer was active
+        OAUTH.verify(postRequestedFor(urlEqualTo("/token")));
+
+        // terminating the transfer deprovisions the Kafka flow, which revokes the OAuth2 token
+        CONSUMER.terminateTransfer(transferProcessId);
+        CONSUMER.waitForTransferProcess(transferProcessId, TERMINATED);
+
         await().atMost(ASYNC_TIMEOUT).untilAsserted(() ->
-                OAUTH.verify(postRequestedFor(urlEqualTo("/token"))));
+                OAUTH.verify(postRequestedFor(urlEqualTo("/revoke"))));
     }
 
     /**

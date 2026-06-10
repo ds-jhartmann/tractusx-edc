@@ -95,8 +95,16 @@ public class KafkaExtension implements BeforeAllCallback, AfterAllCallback {
     }
 
     public List<ConsumerRecord<String, String>> consume(String topic, Duration timeout) {
+        return consume(getBootstrapServers(), topic, timeout);
+    }
+
+    /**
+     * Consumes from the given topic using the supplied bootstrap servers — e.g. the broker coordinates
+     * carried by an EDR — so a test can verify the consumer uses the connection details it was handed.
+     */
+    public List<ConsumerRecord<String, String>> consume(String bootstrapServers, String topic, Duration timeout) {
         var props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, getBootstrapServers());
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "test-" + UUID.randomUUID());
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);

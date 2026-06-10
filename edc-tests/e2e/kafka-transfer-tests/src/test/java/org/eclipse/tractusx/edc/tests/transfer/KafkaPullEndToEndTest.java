@@ -21,6 +21,7 @@ package org.eclipse.tractusx.edc.tests.transfer;
 
 import com.github.tomakehurst.wiremock.junit5.WireMockExtension;
 import jakarta.json.Json;
+import jakarta.json.JsonObject;
 import org.eclipse.edc.jsonld.spi.JsonLd;
 import org.eclipse.edc.junit.annotations.EndToEndTest;
 import org.eclipse.edc.junit.extensions.RuntimeExtension;
@@ -29,11 +30,13 @@ import org.eclipse.tractusx.edc.tests.kafka.KafkaExtension;
 import org.eclipse.tractusx.edc.tests.participant.TransferParticipant;
 import org.eclipse.tractusx.edc.tests.runtimes.PostgresExtension;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
@@ -59,14 +62,16 @@ import static org.eclipse.tractusx.edc.tests.participant.TractusxParticipantBase
 import static org.eclipse.tractusx.edc.tests.runtimes.Runtimes.pgRuntime;
 
 /**
- * End-to-end test for the KafkaBroker-PULL transfer type. Runs a real Kafka broker via Testcontainers
- * and a WireMock-backed OAuth2 token endpoint.
+ * End-to-end test for the {@code KafkaBroker-PULL} transfer type. Runs a real Kafka broker via
+ * Testcontainers and a WireMock-backed OAuth2 token endpoint.
  */
 @EndToEndTest
 public class KafkaPullEndToEndTest {
 
     private static final String TOPIC = "test-topic";
+    private static final String CLIENT_ID = "kafka-client-id";
     private static final String CLIENT_SECRET_KEY = "kafka-client-secret";
+    private static final String CLIENT_SECRET_VALUE = "kafka-client-secret-value";
 
     private static final TransferParticipant CONSUMER = TransferParticipant.Builder.newInstance()
             .name(CONSUMER_NAME)
@@ -105,8 +110,9 @@ public class KafkaPullEndToEndTest {
         CONSUMER.setJsonLd(CONSUMER_RUNTIME.getService(JsonLd.class));
     }
 
-    @Test
-    void kafkaPullTransfer_consumerReceivesMessages() {
+    @BeforeEach
+    void beforeEach() {
+        // the provider's Kafka data plane mints (and revokes) the consumer token against this OAuth2 endpoint
         OAUTH.stubFor(post(urlEqualTo("/token"))
                 .willReturn(aResponse()
                         .withStatus(200)
@@ -114,100 +120,82 @@ public class KafkaPullEndToEndTest {
                         .withBody("{\"access_token\":\"test-access-token\",\"expires_in\":3600}")));
         OAUTH.stubFor(post(urlEqualTo("/revoke"))
                 .willReturn(aResponse().withStatus(200)));
+        PROVIDER_RUNTIME.getService(Vault.class).storeSecret(CLIENT_SECRET_KEY, CLIENT_SECRET_VALUE);
+    }
 
-        PROVIDER_RUNTIME.getService(Vault.class).storeSecret(CLIENT_SECRET_KEY, "kafka-client-secret-value");
-
+    @Test
+    void kafkaPullTransfer_consumerReceivesMessages() {
         KAFKA.createTopic(TOPIC);
         KAFKA.produce(TOPIC, "k1", "hello");
         KAFKA.produce(TOPIC, "k2", "world");
 
-        var assetId = "kafka-test-asset";
-        var dataAddress = Map.<String, Object>of(
-                "name", "kafka-transfer-test",
-                "@type", "DataAddress",
-                "type", "KafkaBroker",
-                "topic", TOPIC,
-                "kafka.bootstrap.servers", KAFKA.getBootstrapServers(),
-                "kafka.security.protocol", "SASL_PLAINTEXT",
-                "kafka.sasl.mechanism", "OAUTHBEARER",
-                "kafka.group.prefix", CONSUMER.getBpn(),
-                "kafka.poll.duration", "PT1S",
-                "tokenUrl", OAUTH.baseUrl() + "/token"
-        );
-        var dataAddressFull = new java.util.HashMap<>(dataAddress);
-        dataAddressFull.put("revokeUrl", OAUTH.baseUrl() + "/revoke");
-        dataAddressFull.put("clientId", "kafka-client-id");
-        dataAddressFull.put("clientSecretKey", CLIENT_SECRET_KEY);
-
-        PROVIDER.createAsset(assetId, Map.of(), dataAddressFull);
-        var policyId = PROVIDER.createPolicyDefinition(bpnPolicy(CONSUMER.getBpn()));
-        PROVIDER.createContractDefinition(assetId, "def-1", policyId, policyId);
-
-        var destination = Json.createObjectBuilder()
-                .add(TYPE, EDC_NAMESPACE + "DataAddress")
-                .add(EDC_NAMESPACE + "type", "HttpData")
-                .add(EDC_NAMESPACE + "baseUrl", "http://placeholder")
-                .build();
-
-        var transferProcessId = CONSUMER
-                .requestAssetFrom(assetId, PROVIDER)
-                .withTransferType("KafkaBroker-PULL")
-                .withDestination(destination)
-                .execute();
-
+        var transferProcessId = startKafkaPullTransfer("kafka-test-asset", "def-1", kafkaSourceAddress("kafka-transfer-test", true));
         CONSUMER.waitForTransferProcess(transferProcessId, STARTED);
 
+        // the consumer can read the messages published to the brokered topic
         var consumed = KAFKA.consume(TOPIC, Duration.ofSeconds(10));
         assertThat(consumed).isNotEmpty();
 
+        // the data plane minted an access token via the OAuth2 client-credentials flow
         OAUTH.verify(postRequestedFor(urlEqualTo("/token")));
     }
 
     @Test
-    void kafkaPullTransfer_suspendRevokesToken() {
-        OAUTH.stubFor(post(urlEqualTo("/token"))
-                .willReturn(aResponse()
-                        .withStatus(200)
-                        .withHeader("Content-Type", "application/json")
-                        .withBody("{\"access_token\":\"test-access-token\",\"expires_in\":3600}")));
-        OAUTH.stubFor(post(urlEqualTo("/revoke"))
-                .willReturn(aResponse().withStatus(200)));
+    void kafkaPullTransfer_withoutGroupPrefix_provisionsViaParticipantFallback() {
+        // the asset omits kafka.group.prefix, so the data plane must fall back to the consumer participant id
+        var transferProcessId = startKafkaPullTransfer("kafka-fallback-asset", "def-2", kafkaSourceAddress("kafka-fallback-test", false));
+        CONSUMER.waitForTransferProcess(transferProcessId, STARTED);
 
-        PROVIDER_RUNTIME.getService(Vault.class).storeSecret(CLIENT_SECRET_KEY, "kafka-client-secret-value");
+        // provisioning still succeeds: an access token is minted despite the missing group prefix
+        await().atMost(ASYNC_TIMEOUT).untilAsserted(() ->
+                OAUTH.verify(postRequestedFor(urlEqualTo("/token"))));
+    }
 
-        var assetId = "kafka-suspend-asset";
-        var dataAddress = new java.util.HashMap<String, Object>();
-        dataAddress.put("name", "kafka-suspend-test");
-        dataAddress.put("@type", "DataAddress");
+    /**
+     * Registers the Kafka asset/policy/contract on the provider and starts a {@code KafkaBroker-PULL}
+     * transfer from the consumer, returning the transfer-process id.
+     */
+    private String startKafkaPullTransfer(String assetId, String contractDefinitionId, Map<String, Object> dataAddress) {
+        PROVIDER.createAsset(assetId, Map.of(), dataAddress);
+        var policyId = PROVIDER.createPolicyDefinition(bpnPolicy(CONSUMER.getBpn()));
+        PROVIDER.createContractDefinition(assetId, contractDefinitionId, policyId, policyId);
+
+        return CONSUMER.requestAssetFrom(assetId, PROVIDER)
+                .withTransferType("KafkaBroker-PULL")
+                .withDestination(kafkaPullDestination())
+                .execute();
+    }
+
+    /**
+     * Builds a {@code KafkaBroker} source {@link Map} data address. When {@code withGroupPrefix} is
+     * {@code false} the {@code kafka.group.prefix} property is omitted to exercise the
+     * participant-id fallback.
+     */
+    private Map<String, Object> kafkaSourceAddress(String name, boolean withGroupPrefix) {
+        var dataAddress = new HashMap<String, Object>();
+        dataAddress.put("name", name);
+        dataAddress.put(TYPE, "DataAddress");
         dataAddress.put("type", "KafkaBroker");
         dataAddress.put("topic", TOPIC);
         dataAddress.put("kafka.bootstrap.servers", KAFKA.getBootstrapServers());
         dataAddress.put("kafka.security.protocol", "SASL_PLAINTEXT");
         dataAddress.put("kafka.sasl.mechanism", "OAUTHBEARER");
+        dataAddress.put("kafka.poll.duration", "PT1S");
         dataAddress.put("tokenUrl", OAUTH.baseUrl() + "/token");
         dataAddress.put("revokeUrl", OAUTH.baseUrl() + "/revoke");
-        dataAddress.put("clientId", "kafka-client-id");
+        dataAddress.put("clientId", CLIENT_ID);
         dataAddress.put("clientSecretKey", CLIENT_SECRET_KEY);
+        if (withGroupPrefix) {
+            dataAddress.put("kafka.group.prefix", CONSUMER.getBpn());
+        }
+        return dataAddress;
+    }
 
-        PROVIDER.createAsset(assetId, Map.of(), dataAddress);
-        var policyId = PROVIDER.createPolicyDefinition(bpnPolicy(CONSUMER.getBpn()));
-        PROVIDER.createContractDefinition(assetId, "def-2", policyId, policyId);
-
-        var destination = Json.createObjectBuilder()
+    private JsonObject kafkaPullDestination() {
+        return Json.createObjectBuilder()
                 .add(TYPE, EDC_NAMESPACE + "DataAddress")
                 .add(EDC_NAMESPACE + "type", "HttpData")
                 .add(EDC_NAMESPACE + "baseUrl", "http://placeholder")
                 .build();
-
-        var transferProcessId = CONSUMER
-                .requestAssetFrom(assetId, PROVIDER)
-                .withTransferType("KafkaBroker-PULL")
-                .withDestination(destination)
-                .execute();
-
-        CONSUMER.waitForTransferProcess(transferProcessId, STARTED);
-
-        await().atMost(ASYNC_TIMEOUT).untilAsserted(() ->
-                OAUTH.verify(postRequestedFor(urlEqualTo("/token"))));
     }
 }

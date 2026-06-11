@@ -6,7 +6,7 @@ data-plane extension and ships in the standard `tractusx-connector` runtime (via
 so it does not require a separate deployment.
 
 Unlike a proxied transfer, data flows **directly** from the provider's Kafka broker to the consumer.
-The EDC control plane stays in charge of access: the extension provisions short-lived OAuth2
+The EDC stays in charge of access: the data-plane extension provisions short-lived OAuth2
 credentials (and, optionally, Kafka ACLs) for the duration of a negotiated transfer, so the provider
 retains full control over the consumer's access throughout.
 
@@ -22,7 +22,7 @@ retains full control over the consumer's access throughout.
   * [D. Suspending/Terminating](#d-suspendingterminating)
 * [DataAddress Schema](#dataaddress-schema)
 * [Configuration](#configuration)
-  * [EDC control plane properties](#edc-control-plane-properties)
+  * [EDC data plane properties](#edc-data-plane-properties)
   * [Kafka broker](#kafka-broker)
   * [Keycloak](#keycloak)
 * [Security and Token Model](#security-and-token-model)
@@ -93,12 +93,13 @@ The transfer is defined by four phases, each illustrated by a sequence diagram.
 **Purpose:** securely create or delete consumer credentials.
 
 1. **Provisioning:** the Consumer Control Plane sends a `TransferRequestMessage` to the Provider
-   Control Plane, which forwards a `ProvisionRequest` to the Kafka Extension. The extension calls the
-   OAuth Service to create credentials, stores them in the Vault, and a `ProvisionResponse` is
-   returned to the consumer.
-2. **Deprovisioning:** when the transfer concludes, the Provider Control Plane issues a
-   `DeprovisionRequest`; the Kafka Extension deletes the credentials via the OAuth Service, clears the
-   Vault entries, and returns a `DeprovisionResponse`.
+   Control Plane, which sends a `DataFlowStartMessage` (Data Plane Signaling) to the data plane.
+   There the Kafka Extension reads the OAuth2 client secret from the Vault, obtains a short-lived
+   access token from the OAuth Service, stores it in the Vault, and returns the provisioned Kafka
+   `DataAddress` in the `DataFlowResponseMessage`.
+2. **Deprovisioning:** when the transfer is terminated, the Provider Control Plane signals the
+   termination to the data plane; the Kafka Extension revokes the token via the OAuth Service and
+   deletes it from the Vault.
 
 ![Sequence diagram EDC Kafka Extension provisioning-deprovisioning](diagrams/Sequence%20diagram%20EDC%20Kafka%20Extension%20provisioning-deprovisioning.png)
 
@@ -108,12 +109,13 @@ The transfer is defined by four phases, each illustrated by a sequence diagram.
 
 1. The Consumer Control Plane instructs the Provider Control Plane to start the transfer; the Provider
    Control Plane performs policy and contract verification.
-2. The Provider Control Plane sends a `DataFlowRequest` to the Kafka Extension, which requests a fresh
-   OAuth2 access token from the OAuth Service via the Client Credentials flow (no refresh token) and
-   creates a `DataAddress` containing the connection details (bootstrap servers, topic, security
-   protocol, SASL mechanism, OAuth token, poll duration, consumer group prefix, and contract id). The
-   Provider Control Plane then sends a `TransferStartMessage` with the complete DataAddress to the
-   Consumer Control Plane, which constructs the final EDR.
+2. The Provider Control Plane sends a `DataFlowStartMessage` (Data Plane Signaling) to the data
+   plane, where the Kafka Extension requests a fresh OAuth2 access token from the OAuth Service via
+   the Client Credentials flow (no refresh token) and creates a `DataAddress` containing the
+   connection details (bootstrap servers, topic, security protocol, SASL mechanism, OAuth token,
+   poll duration, and consumer group prefix). The Provider Control Plane then sends a
+   `TransferStartMessage` with the complete DataAddress to the Consumer Control Plane, which
+   constructs the final EDR.
 
 ![Sequence diagram EDC Kafka Extension start transfer process](diagrams/Sequence%20diagram%20EDC%20Kafka%20Extension%20start%20transfer%20process.png)
 
@@ -132,9 +134,11 @@ new token.
 
 **Purpose:** securely suspend or terminate the transfer by revoking consumer credentials.
 
-The Provider Control Plane sends a suspend/terminate message to the Kafka Extension, which calls the
-OAuth Service to revoke the token and (when ACL management is enabled) revokes the consumer's ACLs.
-The Consumer Control Plane is notified that the transfer has been suspended or terminated.
+The Provider Control Plane signals the suspension or termination to the data plane. On suspend, the
+Kafka Extension revokes the consumer's ACLs (when ACL management is enabled); the short-lived token
+remains valid until it expires, and a resume re-creates the ACLs. On terminate, the extension
+additionally calls the OAuth Service to revoke the token and removes it from the Vault. The Consumer
+Control Plane is notified that the transfer has been suspended or terminated.
 
 ![Sequence diagram EDC Kafka Extension suspending-terminating](diagrams/Sequence%20diagram%20EDC%20Kafka%20Extension%20suspending-terminating.png)
 
@@ -154,7 +158,7 @@ A Kafka asset is published with a `DataAddress` of type `KafkaBroker`:
 | `https://w3id.org/edc/v0.0.1/ns/clientSecretKey` | Vault entry key for the OAuth2 client secret | Yes |
 | `https://w3id.org/edc/v0.0.1/ns/revokeUrl` | OAuth2 token revocation endpoint | No |
 | `https://w3id.org/edc/v0.0.1/ns/kafka.poll.duration` | ISO-8601 consumer poll duration (default `PT1S`) | No |
-| `https://w3id.org/edc/v0.0.1/ns/kafka.group.prefix` | Consumer group prefix the consumer is authorized to use; also scopes the consumer-group ACL. Defaults to the consumer BPN (policy assignee) when omitted. | No |
+| `https://w3id.org/edc/v0.0.1/ns/kafka.group.prefix` | Consumer group prefix the consumer is authorized to use; also scopes the consumer-group ACL. Defaults to the consumer participant id when omitted. | No |
 
 > Property keys may be written as full IRIs (as in the table above) or with the `edc:` prefix (as in the
 > example below); both are equivalent after JSON-LD expansion.
@@ -183,7 +187,7 @@ Example asset registration:
 
 ## Configuration
 
-### EDC control plane properties
+### EDC data plane properties
 
 | Property | Description | Default |
 |---|---|---|
@@ -235,8 +239,9 @@ The extension uses the OAuth2 Client Credentials flow:
    client credentials.
 2. The returned JWT is stored in the EDC Vault keyed by the transfer process id.
 3. The token is included in the EDR sent to the consumer.
-4. On suspend or terminate, the extension calls the token revocation URL (if configured) and deletes
-   the token from the Vault.
+4. On terminate, the extension calls the token revocation URL (if configured) and deletes the token
+   from the Vault. On suspend, broker access is cut by revoking the consumer's ACLs (when ACL
+   management is enabled) while the short-lived token simply expires.
 
 ### Token expiry and revocation
 
@@ -256,11 +261,11 @@ When `edc.dataplane.kafka.acl.enabled=true`:
 1. On transfer start, the extension extracts the `sub` claim from the JWT (used as the Kafka
    principal, `User:<sub>`).
 2. It creates three ACL bindings for that principal: `READ` and `DESCRIBE` on the topic, and `READ` on
-   the consumer group prefix (the `kafka.group.prefix`, defaulting to the consumer BPN) — the same
+   the consumer group prefix (the `kafka.group.prefix`, defaulting to the consumer participant id) — the same
    prefix handed to the consumer in the EDR, so the broker grant matches what the consumer is told to
    use.
 3. On suspend/terminate, the ACLs are revoked immediately — closing the access window even before the
-   token expires.
+   token expires. On resume they are re-created.
 
 See the [Hybrid OAuth2 + Kafka ACL Security](../decision-records/kafka-streaming/2025-07-11-kafka-hybrid-acl-security/README.md)
 decision record for the rationale.
@@ -306,12 +311,12 @@ particular [Modules, Runtimes, and Components](https://eclipse-edc.github.io/doc
 ## Troubleshooting
 
 **Connection issues**
-- Verify Kafka bootstrap servers are reachable from the EDC control plane.
+- Verify Kafka bootstrap servers are reachable from the EDC data plane.
 - Check that the security protocol and SASL mechanism match the broker configuration.
 
 **Authentication issues**
 - Verify the OAuth2 client credentials are correct and stored in the Vault.
-- Check that the token URL is reachable from the EDC control plane.
+- Check that the token URL is reachable from the EDC data plane.
 - Confirm the Vault key name matches `clientSecretKey` in the data address.
 
 **ACL issues** (only when ACL management is enabled)

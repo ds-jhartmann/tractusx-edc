@@ -59,10 +59,11 @@ the upstream convention used by `dataplane-proxy-http`. There is no separate
 
 Each transfer mints a fresh OAuth2 access token via the Client Credentials flow.
 The token is stored in the provider vault keyed by the transfer process id, and
-included in the EDR returned to the consumer. On suspend/terminate, the extension calls
-the provider's OAuth2 revocation endpoint and removes the token from the vault; because
-the broker validates the JWT by signature and expiry, immediate broker-level cutoff is
-provided by ACL revocation (see below), otherwise access ends at the token's TTL.
+included in the EDR returned to the consumer. On terminate, the extension calls
+the provider's OAuth2 revocation endpoint and removes the token from the vault; suspend
+leaves the token untouched. Because the broker validates the JWT by signature and expiry,
+immediate broker-level cutoff on suspend/terminate is provided by ACL revocation (see
+below), otherwise access ends at the token's TTL.
 
 ### Kafka ACL management
 
@@ -77,11 +78,13 @@ window independently of token expiry. The ACL admin client is configured via the
 
 ### Runtime wiring
 
-`kafka-broker-extension` is a data-plane extension and is added as a `runtimeOnly` dependency of
-`edc-dataplane-base`; `validator-data-address-kafka` stays on `edc-controlplane-base` (DataAddress
+`kafka-broker-extension` is a data-plane extension and is wired into `edc-dataplane-base` as an
+`implementation` project dependency (matching the other bundled extensions);
+`validator-data-address-kafka` is wired into `edc-controlplane-base` the same way (DataAddress
 validation at asset creation). On EDC 0.16.0 the extension registers a `ResourceDefinitionGenerator`
-plus a `Provisioner`/`Deprovisioner` (mint the OAuth token, create/revoke Kafka ACLs) and an
-`EndpointDataReferenceService` that returns the broker EDR. There is no proxied data plane — the
+plus a `Provisioner`/`Deprovisioner` (mint and revoke the OAuth token) and an
+`EndpointDataReferenceService` that returns the broker EDR and creates/revokes the Kafka ACLs per
+activation (start/resume and suspend/terminate). There is no proxied data plane — the
 consumer reads directly from the broker using the EDR. (The original control-plane `DataFlowController`
 approach was removed when EDC 0.16.0 dropped `DataFlowManager`; see the EDC *inline-data-flow-manager*
 decision record.)

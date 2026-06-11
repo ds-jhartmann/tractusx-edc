@@ -9,12 +9,13 @@ package "Provider ecosystem" #AliceBlue {
 
 package "Provider cluster" #AliceBlue {
     [Control Plane] as ProviderCP
-    [Data Plane] as ProviderDP
-    [Kafka Extension] as ProviderKE
+    package "Data Plane" {
+        [Kafka Extension] as ProviderKE
+    }
     [Kafka Service] as Kafka
     [OAuth Service] as OAuthService
     [Vault]
-    interface "OAuth Manage API" as OAuth2API
+    interface "OAuth Token API" as OAuth2API
     OAuth2API - OAuthService
 }
 
@@ -32,13 +33,11 @@ ConsumeAPI - Kafka
 
 ProviderApp --> ProducerAPI : Send stream of data to topic
 ConsumerCP <--> ProviderCP : Initiate negotiation, transfer
-ProviderCP <--> ProviderKE : Start/suspend/terminate transfer
-ConsumerCP --> ProviderDP : Renew token
-ProviderDP --> OAuth2API : Renew/obtain/revoke token
-[Vault] <--> ProviderKE : Read/Write secret
-ProviderKE --> OAuth2API : Create/delete credentials
-ProviderKE --> ProviderDP : Obtain/revoke tokens
-Kafka --> OAuth2API : Authentication
+ProviderCP --> ProviderKE : Start/suspend/terminate data flow\n(Data Plane Signaling)
+ProviderKE --> OAuth2API : Mint/revoke access token
+[Vault] <--> ProviderKE : Read client secret,\nstore/delete token
+ProviderKE --> Kafka : Create/revoke ACLs (optional,\nvia admin client)
+Kafka --> OAuth2API : Validate token
 ConsumerApp --> ConsumerCP : Get EDR
-ConsumerApp --> ConsumeAPI : Poll data
+ConsumerApp --> ConsumeAPI : Poll data (SASL/OAUTHBEARER)
 @enduml

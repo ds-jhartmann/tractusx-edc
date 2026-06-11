@@ -44,8 +44,8 @@ import static org.eclipse.tractusx.edc.dataplane.kafka.provision.KafkaProvisionC
 
 /**
  * Data-plane {@link Deprovisioner} for {@code KafkaBroker} flows: revokes the broker ACLs and the OAuth2
- * token on suspend/terminate, closing the access window independently of token expiry. Cleanup is
- * idempotent — a missing token or untracked ACLs is treated as success.
+ * token when the flow is deprovisioned on terminate, closing the access window independently of token
+ * expiry. Cleanup is idempotent — a missing token or untracked ACLs is treated as success.
  */
 public class KafkaDeprovisioner implements Deprovisioner {
 

@@ -9,22 +9,27 @@ end box
 
 box "Provider cluster" #LightBlue
     participant "Control Plane"  as ProviderCP
-    participant "Kafka Extension" as ProviderKE
+    participant "Data Plane\n(Kafka Extension)" as ProviderDP
+    participant "Vault" as Vault
     participant "OAuth Service" as OAuth2
 end box
 
-== Provision ==
+== Provision (transfer start) ==
 ConsumerCP -> ProviderCP : Send TransferRequestMessage
-ProviderCP -> ProviderKE : Send ProvisionRequest
-ProviderKE -> OAuth2 : Create credentials
-ProviderKE <-- OAuth2 : Credentials created
-ProviderKE -> ProviderKE : Save credentials in vault
-ProviderCP <-- ProviderKE : Return ProvisionResponse
+ProviderCP -> ProviderDP : Send DataFlowStartMessage\n(Data Plane Signaling)
+ProviderDP -> Vault : Read OAuth2 client secret
+ProviderDP <-- Vault : Client secret
+ProviderDP -> OAuth2 : Request access token\n(Client Credentials flow)
+ProviderDP <-- OAuth2 : Access token
+ProviderDP -> Vault : Store token (keyed by flow id)
+ProviderCP <-- ProviderDP : DataFlowResponseMessage\nwith Kafka DataAddress (EDR)
 
-== Deprovision ==
-ProviderCP -> ProviderKE : Send DeprovisionRequest
-ProviderKE -> OAuth2 : Delete credentials
-ProviderKE <-- OAuth2 : Credentials deleted
-ProviderKE -> ProviderKE : Delete credentials from vault
-ProviderCP <-- ProviderKE : Return DeprovisionResponse
+== Deprovision (transfer terminate) ==
+ProviderCP -> ProviderDP : Terminate data flow\n(Data Plane Signaling)
+ProviderDP -> Vault : Read token
+ProviderDP <-- Vault : Token
+ProviderDP -> OAuth2 : Revoke token (revokeUrl)
+ProviderDP <-- OAuth2 : Token revoked
+ProviderDP -> Vault : Delete token
+ProviderCP <-- ProviderDP : Flow terminated
 @enduml
